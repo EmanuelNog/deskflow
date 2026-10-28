@@ -28,7 +28,7 @@ private:
   static QString readAll(const QString &fileName);
 
   static constexpr int s_paddingSize = 64 * 1024;
-  static constexpr int s_maxPaddingWrites = 64;
+  static constexpr int s_maxPaddingWrites = 1024;
 
   QTemporaryDir m_dir;
   QString m_fileName;

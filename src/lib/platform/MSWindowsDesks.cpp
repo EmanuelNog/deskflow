@@ -90,7 +90,11 @@ static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
   inp.ki.dwFlags = dwFlags & 0xF;
   inp.ki.time = 0;
   inp.ki.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  // A rejected injection (UIPI, secure desktop, wrong session) used to be invisible: the key
+  // simply never appeared. Log it so a dead keyboard can be attributed to this hop.
+  if (SendInput(1, &inp, sizeof(inp)) != 1) {
+    LOG_WARN("SendInput(keyboard) rejected, vk=0x%02x scan=0x%02x flags=0x%x error=%d", wVk, wScan, dwFlags, GetLastError());
+  }
 }
 
 static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
@@ -103,7 +107,9 @@ static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
   inp.mi.mouseData = dwData;
   inp.mi.time = 0;
   inp.mi.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  if (SendInput(1, &inp, sizeof(inp)) != 1) {
+    LOG_WARN("SendInput(mouse) rejected, flags=0x%x dx=%d dy=%d error=%d", dwFlags, dx, dy, GetLastError());
+  }
 }
 
 //

@@ -15,7 +15,7 @@
 #include <QString>
 #include <QTextStream>
 
-constexpr auto s_logFileSizeLimit = 1024 * 1024; //!< Max Log size before rotating (1Mb)
+constexpr auto s_logFileSizeLimit = 32 * 1024 * 1024; //!< Max Log size before rotating (32MiB: 1MiB kept only ~1 minute of VERBOSE)
 
 //
 // StopLogOutputter
