@@ -92,6 +92,10 @@ private:
   mutable std::string m_pendingText;
   mutable std::string m_pendingHtml;
   mutable bool m_pendingCommit = false;
+  //! set by add(): only a clipboard that RECEIVED data may publish on close(). Without
+  //! this, closing a clipboard that was only READ (IClipboard::copy closes its source)
+  //! would publish the empty pending buffers and wipe the compositor's selection.
+  mutable bool m_pendingAdded = false;
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};

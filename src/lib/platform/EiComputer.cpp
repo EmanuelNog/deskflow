@@ -198,10 +198,11 @@ void *EiComputer::getEventTarget() const
 bool EiComputer::getClipboard(ClipboardID id, IClipboard *clipboard) const
 {
   // Prefer direct Wayland selection access when the compositor supports it.
-  // Return the live object: callers poll getTime() to notice changes, so a snapshot copy
-  // would freeze the clipboard at whatever it held when this was called.
+  // The out-parameter is the contract: callers marshal what it holds, so the live
+  // selection has to be COPIED into it. (Returning the live object instead left the
+  // caller's clipboard empty, so a local copy was never sent to the client.)
   if (m_selectionClipboard != nullptr) {
-    return m_selectionClipboard;
+    return IClipboard::copy(clipboard, m_selectionClipboard);
   }
 
   // If using portal input capture, get clipboard from there

@@ -471,9 +471,11 @@ void WaylandClipboard::add(Format format, const std::string &data)
   switch (format) {
   case Format::Text:
     m_pendingText = data;
+    m_pendingAdded = true;
     break;
   case Format::HTML:
     m_pendingHtml = data;
+    m_pendingAdded = true;
     break;
   default:
     break; // bitmaps are not supported by this backend (yet)
@@ -490,6 +492,10 @@ void WaylandClipboard::close() const
 {
   {
     std::scoped_lock lock{m_mutex};
+    if (!m_pendingAdded) {
+      return; // read-only use (IClipboard::copy closes its source): nothing to publish
+    }
+    m_pendingAdded = false;
     m_pendingCommit = true;
   }
   const_cast<WaylandClipboard *>(this)->wake();
