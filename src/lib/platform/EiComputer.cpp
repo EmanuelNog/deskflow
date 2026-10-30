@@ -697,10 +697,20 @@ void EiComputer::addDevice(struct ei_device *device)
   // client - which is exactly the "keyboard is dead, mouse still works" failure.
   // (2026-10-29: the captured keyboard was recreated mid-session and no key reached
   //  the server for 73 s; four test presses only arrived after a leave/enter cycle.)
+  // Only a resumed device may be told to emulate, and the flag must record that we did:
+  // starting it here without setting m_isEmulating made the next injected motion start the
+  // same device a second time, which EIS answers with "Invalid event from receiver ei
+  // context" and a disconnect.  Devices that arrive mid-session get their start from
+  // EI_EVENT_DEVICE_RESUMED -> ensureEmulating(), which keeps the flag honest.
   if (m_isPrimary && m_portalInputCapture && m_portalInputCapture->isActive() &&
       (m_eiKeyboard == device || m_eiPointer == device || m_eiAbs == device)) {
     ++m_sequenceNumber;
     ei_device_start_emulating(device, m_sequenceNumber);
+    // Record it.  Without this the next injected motion saw m_isEmulating == false and
+    // started the same device again; EIS rejects a second start_emulating on a device it
+    // already has in EMULATING with "Invalid event from receiver ei context" and drops the
+    // whole client, which Deskflow then re-allocates - the input stutter.
+    m_isEmulating = true;
     LOG_INFO(
         "device %s started emulating on arrival (capture session already active)", ei_device_get_name(device)
     );
