@@ -49,6 +49,14 @@ elseif(UNIX)
       SOURCE EiComputerArrivalTests.cpp
       WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
     )
+
+    create_test(
+      NAME EiComputerEmulationTests
+      DEPENDS platform
+      LIBS base arch
+      SOURCE EiComputerEmulationTests.cpp
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
+    )
   endif()
 
   if (BUILD_X11_SUPPORT)

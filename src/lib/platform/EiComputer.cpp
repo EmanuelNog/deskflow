@@ -439,32 +439,46 @@ void EiComputer::cancelIdleEmulationTimer() const
   }
 }
 
+EiComputer::EmulationSlot EiComputer::emulationSlotOf(const ei_device *device) const
+{
+  if (device == m_eiPointer)
+    return EmulationSlot::Pointer;
+  if (device == m_eiKeyboard)
+    return EmulationSlot::Keyboard;
+  if (device == m_eiAbs)
+    return EmulationSlot::Absolute;
+  return EmulationSlot::Untracked;
+}
+
 void EiComputer::ensureEmulating() const
 {
   if (m_isPrimary || !m_isOnComputer)
     return;
 
-  if (!m_isEmulating) {
+  // Start only what EIS has resumed and what we have not already started: a start on a device
+  // still in EMULATING is "Invalid device state N for a start_emulating event" + disconnect.
+  const auto toStart =
+      m_emulating.toStart(m_eiPointer && m_pointerResumed, m_eiKeyboard && m_keyboardResumed,
+                          m_eiAbs && m_absResumed);
+  if (toStart.pointer || toStart.keyboard || toStart.absolute)
     ++m_sequenceNumber;
-    bool started = false;
-    if (m_eiPointer && m_pointerResumed) {
-      ei_device_start_emulating(m_eiPointer, m_sequenceNumber);
-      started = true;
-    }
-    if (m_eiKeyboard && m_keyboardResumed) {
-      ei_device_start_emulating(m_eiKeyboard, m_sequenceNumber);
-      started = true;
-    }
-    if (m_eiAbs && m_absResumed) {
-      ei_device_start_emulating(m_eiAbs, m_sequenceNumber);
-      started = true;
-    }
-    if (!started) {
-      // Nothing is resumed: EIS has not handed us a usable device, so there is nothing
-      // to emulate yet.  Leave m_isEmulating false and try again on the next input.
-      return;
-    }
-    m_isEmulating = true;
+  if (toStart.pointer) {
+    ei_device_start_emulating(m_eiPointer, m_sequenceNumber);
+    m_emulating.pointer = true;
+  }
+  if (toStart.keyboard) {
+    ei_device_start_emulating(m_eiKeyboard, m_sequenceNumber);
+    m_emulating.keyboard = true;
+  }
+  if (toStart.absolute) {
+    ei_device_start_emulating(m_eiAbs, m_sequenceNumber);
+    m_emulating.absolute = true;
+  }
+
+  if (!m_emulating.any()) {
+    // Nothing is resumed: EIS has not handed us a usable device, so there is nothing to
+    // emulate yet.  Try again on the next input.
+    return;
   }
 
   cancelIdleEmulationTimer();
@@ -478,15 +492,13 @@ void EiComputer::ensureEmulating() const
 void EiComputer::stopEmulating() const
 {
   cancelIdleEmulationTimer();
-  if (!m_isEmulating)
-    return;
-  if (m_eiPointer && m_pointerResumed)
+  if (m_eiPointer && m_emulating.pointer)
     ei_device_stop_emulating(m_eiPointer);
-  if (m_eiKeyboard && m_keyboardResumed)
+  if (m_eiKeyboard && m_emulating.keyboard)
     ei_device_stop_emulating(m_eiKeyboard);
-  if (m_eiAbs && m_absResumed)
+  if (m_eiAbs && m_emulating.absolute)
     ei_device_stop_emulating(m_eiAbs);
-  m_isEmulating = false;
+  m_emulating = EmulationState{};
 }
 
 void EiComputer::enter()
@@ -703,8 +715,9 @@ void EiComputer::addDevice(struct ei_device *device)
   // disconnect that rebuilds the whole capture, i.e. an input stall.  (Measured 2026-10-30 on the
   // installed build: 89 arrival starts, 46 invalid starts, 39 disconnects with 39 re-allocations
   // in one rotated log.)
-  // Every start must also record itself in m_isEmulating: one that leaves the flag false makes
-  // the next injected motion start the SAME device a second time, which EIS rejects the same way.
+  // Every start must also record itself PER DEVICE (m_emulating): one that leaves its slot
+  // false makes the next injected motion start the SAME device a second time, which EIS rejects
+  // the same way.
   // Only when we are actually injecting into this computer - a device resumed for a screen the
   // pointer is not on must not be put into emulating, or it holds that state with no events.
   const bool tracked = device == m_eiPointer || device == m_eiKeyboard || device == m_eiAbs;
@@ -713,10 +726,10 @@ void EiComputer::addDevice(struct ei_device *device)
   if (tracked && m_isOnComputer && canStartEmulatingOnArrival(m_isPrimary, resumed)) {
     ++m_sequenceNumber;
     ei_device_start_emulating(device, m_sequenceNumber);
-    m_isEmulating = true;
+    m_emulating.setEmulating(emulationSlotOf(device), true);
     LOG_INFO("device %s started emulating on arrival (session already active)", ei_device_get_name(device));
-    // ensureEmulating() owns the idle-emulation timer.  It short-circuits on m_isEmulating, so this
-    // only arms that timer - it cannot start the device a second time.
+    // ensureEmulating() owns the idle-emulation timer.  The device's slot is already marked
+    // emulating, so this only arms that timer - it cannot start the device a second time.
     ensureEmulating();
   }
 
@@ -736,22 +749,26 @@ void EiComputer::removeDevice(struct ei_device *device)
   bool wasTracked = false;
   if (device == m_eiPointer) {
     m_pointerResumed = false;
+    m_emulating.pointer = false;
     m_eiPointer = ei_device_unref(m_eiPointer);
     wasTracked = true;
   }
   if (device == m_eiKeyboard) {
     m_keyboardResumed = false;
+    m_emulating.keyboard = false;
     m_eiKeyboard = ei_device_unref(m_eiKeyboard);
     wasTracked = true;
   }
   if (device == m_eiAbs) {
     m_absResumed = false;
+    m_emulating.absolute = false;
     m_eiAbs = ei_device_unref(m_eiAbs);
     wasTracked = true;
   }
 
   if (wasTracked) {
-    m_isEmulating = false;
+    // Only the removed device left emulating; a sibling that is still emulating keeps the idle
+    // timer through the next input (ensureEmulating() re-arms it).
     cancelIdleEmulationTimer();
     // same as for a paused device: no release events follow a removal
     updateButtons();
@@ -1104,7 +1121,13 @@ void EiComputer::handleSystemEvent(const Event &)
         m_keyboardResumed = false;
       if (device == m_eiAbs)
         m_absResumed = false;
-      m_isEmulating = false;
+      // Clear ONLY the paused device's emulation.  The old unconditional flag cleared it for
+      // every device, so the next injected input called ensureEmulating() and started the
+      // devices that were still in EMULATING; libeis answers a start on such a device with
+      // "Invalid device state N for a start_emulating event" and drops the client, which drops
+      // the secondary's whole EI session (chk-n5va.49).  A device we do not track
+      // (EmulationSlot::Untracked) leaves every other slot as it is.
+      m_emulating.pause(emulationSlotOf(device));
       // a paused device is reset to neutral by the EIS side and sends no
       // further events, so the releases for held buttons never arrive
       updateButtons();

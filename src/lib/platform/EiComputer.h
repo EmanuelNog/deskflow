@@ -105,6 +105,92 @@ public:
    */
   static bool canStartEmulatingOnArrival(bool isPrimary, bool resumed);
 
+  //! Which of the three devices Deskflow drives a given ei_device is.  `Untracked` means a device
+  //! the capture session holds but Deskflow does not track (a touchscreen, a second tablet).
+  enum class EmulationSlot
+  {
+    Untracked,
+    Pointer,
+    Keyboard,
+    Absolute
+  };
+
+  /*!
+   * Per-device emulation bookkeeping.
+   *
+   * ei_device_start_emulating() is per device, and libeis keeps the state per device: a second
+   * start on a device it already holds in EMULATING is answered with "Invalid device state N
+   * for a start_emulating event" and a disconnect, which rebuilds the whole capture (an input
+   * stall).  A single bool cannot express that - any pause cleared it for every device, so the
+   * next injected input restarted devices that had never stopped.
+   */
+  struct EmulationState
+  {
+    bool pointer = false;
+    bool keyboard = false;
+    bool absolute = false;
+
+    //! The devices a start pass must start: resumed, and not already emulating.
+    struct StartSet
+    {
+      bool pointer = false;
+      bool keyboard = false;
+      bool absolute = false;
+    };
+
+    bool any() const
+    {
+      return pointer || keyboard || absolute;
+    }
+
+    bool isEmulating(EmulationSlot slot) const
+    {
+      switch (slot) {
+        case EmulationSlot::Pointer:
+          return pointer;
+        case EmulationSlot::Keyboard:
+          return keyboard;
+        case EmulationSlot::Absolute:
+          return absolute;
+        case EmulationSlot::Untracked:
+          break;
+      }
+      return false;
+    }
+
+    void setEmulating(EmulationSlot slot, bool value)
+    {
+      switch (slot) {
+        case EmulationSlot::Pointer:
+          pointer = value;
+          break;
+        case EmulationSlot::Keyboard:
+          keyboard = value;
+          break;
+        case EmulationSlot::Absolute:
+          absolute = value;
+          break;
+        case EmulationSlot::Untracked:
+          // Not ours: nothing to record.
+          break;
+      }
+    }
+
+    //! A pause clears ONLY the paused device. EIS resets that device to neutral by itself and
+    //! sends no further events for it; every other device is untouched and stays emulating.
+    void pause(EmulationSlot slot)
+    {
+      setEmulating(slot, false);
+    }
+
+    StartSet toStart(bool pointerResumed, bool keyboardResumed, bool absoluteResumed) const
+    {
+      return StartSet{
+          pointerResumed && !pointer, keyboardResumed && !keyboard, absoluteResumed && !absolute
+      };
+    }
+  };
+
   // Local clipboard cache (used by PortalRemoteDesktop to land selection reads)
   EiClipboard *getClipboardCache() const
   {
@@ -147,6 +233,7 @@ private:
   void handlePortalSessionClosed();
   void ensureEmulating() const;
   void stopEmulating() const;
+  EmulationSlot emulationSlotOf(const ei_device *device) const;
   void cancelIdleEmulationTimer() const;
   void updatePortalGlobalShortcuts();
 
@@ -190,7 +277,9 @@ private:
   // Lazily-started EIS emulation: only grab while relayed input is actually
   // flowing, and release after a short idle so the compositor can DPMS-sleep
   // this computer even while the deskflow cursor logically sits on it.
-  mutable bool m_isEmulating = false;
+  // Tracked PER DEVICE: a pause of one device must not make the next input restart a device
+  // EIS still holds in EMULATING (chk-n5va.49).
+  mutable EmulationState m_emulating;
   //! Devices may only be told to emulate while EIS has them resumed.  Calling
   //! start_emulating on a paused or removed device makes EIS answer with
   //! "Invalid event from receiver ei context" and drop the client, which the portal
