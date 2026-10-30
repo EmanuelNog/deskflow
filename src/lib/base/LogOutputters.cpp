@@ -130,7 +130,7 @@ void FileLogOutputter::setLogFilename(const QString &logFile)
   m_size = 0;
 }
 
-bool FileLogOutputter::write(LogLevel::Level, const QString &message)
+bool FileLogOutputter::write(LogLevel::Level level, const QString &message)
 {
   // Keep the file open across lines.  The previous implementation opened, flushed and closed
   // the file (then queried its size) for EVERY line.  At VERBOSE rates that is hundreds of
@@ -149,10 +149,22 @@ bool FileLogOutputter::write(LogLevel::Level, const QString &message)
   if (written != line.size())
     return false;
 
-  // flush to the OS, not to the platter: a line survives a crash, not a power cut.  This keeps
-  // the log useful while removing the per-line open/close/stat cost.
-  m_file.flush();
+  // Flush to the OS, not to the platter, and not on every line: at VERBOSE rates a flush per
+  // line is a write syscall per line on the input thread, which is felt as stutter.  Batching
+  // by size and by time keeps the log useful (at most ~100 ms behind, at most 8 KiB lost on a
+  // crash) while cutting the syscall count by two orders of magnitude.
   m_size += written;
+  m_unflushed += written;
+
+  // Verbose is the only level that can fire hundreds of times per second (one per input
+  // event).  Everywhere else a line per flush keeps "tail the log" honest, so only Verbose
+  // is batched: by size, and by time so the file is never more than ~100 ms behind.
+  const bool batch = (level == LogLevel::Level::Verbose);
+  if (!batch || m_unflushed >= 8192 || !m_lastFlush.isValid() || m_lastFlush.elapsed() >= 100) {
+    m_file.flush();
+    m_unflushed = 0;
+    m_lastFlush.start();
+  }
 
   if (m_size > s_logFileSizeLimit)
     rotate();

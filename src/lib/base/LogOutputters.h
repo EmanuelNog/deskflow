@@ -10,6 +10,7 @@
 
 #include "base/ILogOutputter.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QString>
 
@@ -74,6 +75,9 @@ private:
   QString m_fileName;
   QFile m_file;
   qint64 m_size = 0;
+  //! bytes written since the last flush, and when that flush happened
+  qint64 m_unflushed = 0;
+  QElapsedTimer m_lastFlush;
 };
 
 //! Write log to system log
