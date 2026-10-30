@@ -1078,8 +1078,10 @@ void EiComputer::handleSystemEvent(const Event &)
           if (m_portalInputCapture->isActive()) {
             m_portalInputCapture->release();
           }
-          delete m_portalInputCapture;
-          m_portalInputCapture = new PortalInputCapture(this, this->m_events);
+          // Only the session is rebuilt, from the portal thread: deleting and re-creating
+          // the capture here ran the portal session teardown while libportal was still
+          // unwinding its own callbacks for the session that just closed.
+          m_portalInputCapture->restartSession();
         }
       }
       this->handlePortalSessionClosed();

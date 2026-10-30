@@ -177,52 +177,113 @@ PortalInputCapture::PortalInputCapture(EiComputer *computer, IEventQueue *events
   // Create clipboard for primary clipboard ID
   m_clipboard = new EiClipboard(kClipboardClipboard);
 
-  m_glibMainLoop = g_main_loop_new(nullptr, true);
+  m_glibContext = g_main_context_new();
+  m_glibMainLoop = g_main_loop_new(m_glibContext, true);
 
   auto tMethodJob = new TMethodJob<PortalInputCapture>(this, &PortalInputCapture::glibThread);
   m_glibThread = new Thread(tMethodJob);
-
-  auto captureCallback = [](gpointer data) { return static_cast<PortalInputCapture *>(data)->initSession(); };
-
-  g_idle_add(captureCallback, this);
 }
 
 PortalInputCapture::~PortalInputCapture()
 {
-  if (g_main_loop_is_running(m_glibMainLoop))
+  if (m_glibMainLoop && g_main_loop_is_running(m_glibMainLoop))
     g_main_loop_quit(m_glibMainLoop);
 
   if (m_glibThread) {
     m_glibThread->cancel();
     m_glibThread->wait();
     m_glibThread = nullptr;
+  }
 
+  // No portal callback can run any more: the thread that dispatches them is gone.
+  teardownSession();
+
+  if (m_glibMainLoop) {
     g_main_loop_unref(m_glibMainLoop);
     m_glibMainLoop = nullptr;
   }
-
-  if (m_session) {
-    using enum Signal;
-    XdpSession *parentSession = xdp_input_capture_session_get_session(m_session);
-    if (m_signals.at(SessionClosed) != 0)
-      g_signal_handler_disconnect(parentSession, m_signals.at(SessionClosed));
-    g_signal_handler_disconnect(m_session, m_signals.at(Disabled));
-    g_signal_handler_disconnect(m_session, m_signals.at(Activated));
-    g_signal_handler_disconnect(m_session, m_signals.at(Deactivated));
-    g_signal_handler_disconnect(m_session, m_signals.at(ZonesChanged));
-#ifdef HAVE_LIBPORTAL_CLIPBOARD
-    g_signal_handler_disconnect(parentSession, m_signals.at(SelectionTransfer));
-#endif
-    g_object_unref(m_session);
+  // Drops whatever was still queued for us (the re-enable timeout, a pending restart).
+  if (m_glibContext) {
+    g_main_context_unref(m_glibContext);
+    m_glibContext = nullptr;
   }
+
+  g_object_unref(m_portal);
+
+  delete m_clipboard;
+}
+
+void PortalInputCapture::teardownSession()
+{
+  using enum Signal;
+
+  if (!m_session) {
+    for (auto b : m_barriers) {
+      g_object_unref(b);
+    }
+    m_barriers.clear();
+    m_barrierInfo.clear();
+    return;
+  }
+
+  XdpSession *parentSession = xdp_input_capture_session_get_session(m_session);
+
+  if (m_signals.at(SessionClosed) != 0) {
+    g_signal_handler_disconnect(parentSession, m_signals.at(SessionClosed));
+    m_signals.at(SessionClosed) = 0;
+  }
+  for (const auto signal : {Disabled, Activated, Deactivated, ZonesChanged}) {
+    if (m_signals.at(signal) != 0) {
+      g_signal_handler_disconnect(m_session, m_signals.at(signal));
+      m_signals.at(signal) = 0;
+    }
+  }
+#ifdef HAVE_LIBPORTAL_CLIPBOARD
+  if (m_signals.at(SelectionTransfer) != 0) {
+    g_signal_handler_disconnect(parentSession, m_signals.at(SelectionTransfer));
+    m_signals.at(SelectionTransfer) = 0;
+  }
+#endif
 
   for (auto b : m_barriers) {
     g_object_unref(b);
   }
   m_barriers.clear();
-  g_object_unref(m_portal);
+  m_barrierInfo.clear();
 
-  delete m_clipboard;
+  // The handlers are detached, so this cannot re-enter handleSessionClosed().  Telling the
+  // portal the session is over is what frees its side of the input capture; dropping our
+  // last reference without it leaves the compositor holding a session whose transport we
+  // already closed - which is the state the EI disconnect arrives in.
+  xdp_session_close(parentSession);
+
+  g_object_unref(m_session);
+  m_session = nullptr;
+  m_enabled = false;
+  m_isActive = false;
+  m_activationId = 0;
+}
+
+void PortalInputCapture::restartSession()
+{
+  if (!m_glibContext) {
+    return;
+  }
+
+  // Runs on the portal thread, never inside the caller's callback: libportal is still
+  // unwinding the old session's callbacks when the EIS disconnect reaches us, and
+  // re-creating the session from there is what corrupted it.
+  g_main_context_invoke(
+      m_glibContext,
+      [](gpointer data) -> gboolean {
+        auto *self = static_cast<PortalInputCapture *>(data);
+        LOG_DEBUG("restarting the portal input capture session after an eis disconnect");
+        self->teardownSession();
+        self->initSession();
+        return G_SOURCE_REMOVE;
+      },
+      this
+  );
 }
 
 EiClipboard *PortalInputCapture::getClipboard(ClipboardID id) const
@@ -293,6 +354,14 @@ void PortalInputCapture::handleSelectionTransfer(XdpSession *session, const char
 void PortalInputCapture::setupSession(XdpInputCaptureSession *session)
 {
   g_autoptr(GError) error = nullptr;
+
+  if (!session) {
+    // Never hand libportal a null session: xdp_input_capture_session_get_session() is a
+    // bare field read and dereferences it (the 2026-10-30 crash was exactly this, at 0x18).
+    LOG_WARN("no input capture session to set up");
+    return;
+  }
+
   XdpSession *parentSession = xdp_input_capture_session_get_session(session);
 
 #ifdef HAVE_LIBPORTAL_CLIPBOARD
@@ -306,9 +375,9 @@ void PortalInputCapture::setupSession(XdpInputCaptureSession *session)
       Settings::setValue(Settings::Server::XdpRestoreToken, QString());
 #endif
       Settings::setValue(Settings::Server::XdpClipboardRetried, true);
-      g_object_unref(m_session);
-      m_session = nullptr;
-      g_idle_add([](gpointer data) { return static_cast<PortalInputCapture *>(data)->initSession(); }, this);
+      // Retry from this thread's context, so the retry dies with this object instead of
+      // running against freed memory from the next session's thread.
+      restartSession();
       return;
     }
   }
@@ -641,6 +710,9 @@ gboolean PortalInputCapture::initSession()
 
 void PortalInputCapture::enable()
 {
+  if (!m_session) {
+    return;
+  }
   if (!m_enabled) {
     LOG_DEBUG("enabling the portal input capture session");
     xdp_input_capture_session_enable(m_session);
@@ -650,6 +722,9 @@ void PortalInputCapture::enable()
 
 void PortalInputCapture::disable()
 {
+  if (!m_session) {
+    return;
+  }
   if (m_enabled) {
     LOG_DEBUG("disabling the portal input capture session");
     xdp_input_capture_session_disable(m_session);
@@ -659,6 +734,10 @@ void PortalInputCapture::disable()
 
 void PortalInputCapture::release()
 {
+  if (!m_session) {
+    m_isActive = false;
+    return;
+  }
   LOG_DEBUG("releasing input capture session, id=%d", m_activationId);
   xdp_input_capture_session_release(m_session, m_activationId);
   m_isActive = false;
@@ -666,6 +745,10 @@ void PortalInputCapture::release()
 
 void PortalInputCapture::release(double x, double y)
 {
+  if (!m_session) {
+    m_isActive = false;
+    return;
+  }
   const auto [mappedX, mappedY] = mapPortalReleasePosition(x, y);
   LOG_DEBUG(
       "releasing input capture session, id=%d x=%.1f y=%.1f mapped=%.1f,%.1f", m_activationId, x, y, mappedX, mappedY
@@ -689,14 +772,24 @@ void PortalInputCapture::handleDisabled(const XdpInputCaptureSession *, const GV
   // will), so we just assume that the zones will change or something and we
   // can re-enable again
   // ... very soon
-  g_timeout_add(
-      1000,
+  if (m_reenableSourceId != 0) {
+    return;
+  }
+  auto *source = g_timeout_source_new(1000);
+  g_source_set_callback(
+      source,
       [](gpointer data) -> gboolean {
-        static_cast<PortalInputCapture *>(data)->enable();
-        return false;
+        auto *self = static_cast<PortalInputCapture *>(data);
+        self->m_reenableSourceId = 0;
+        self->enable();
+        return G_SOURCE_REMOVE;
       },
-      this
+      this, nullptr
   );
+  // Attach to our own context: a timer in the process-wide default one fired after this
+  // object was gone.
+  m_reenableSourceId = g_source_attach(source, m_glibContext);
+  g_source_unref(source);
 }
 
 void PortalInputCapture::handleActivated(
@@ -773,6 +866,10 @@ void PortalInputCapture::handleDeactivated(
 
 void PortalInputCapture::handleZonesChanged(XdpInputCaptureSession *session, const GVariant *)
 {
+  if (!m_session) {
+    return;
+  }
+
   for (auto b : m_barriers)
     g_object_unref(b);
   m_barriers.clear();
@@ -871,10 +968,20 @@ void PortalInputCapture::glibThread(const void *)
 
   LOG_DEBUG("glib thread running");
 
+  // Everything libportal queues for us (async results, idles, timeouts) belongs to this
+  // context, iterated by this thread only - see m_glibContext.
+  g_main_context_push_thread_default(context);
+
+  // The first session is created here rather than from an idle queued by the constructor:
+  // that idle lived in the process-wide default context and outlived the object.
+  initSession();
+
   while (g_main_loop_is_running(m_glibMainLoop)) {
     Thread::testCancel();
     g_main_context_iteration(context, true);
   }
+
+  g_main_context_pop_thread_default(context);
 
   LOG_DEBUG("shutting down glib thread");
 }

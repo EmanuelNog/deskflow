@@ -38,6 +38,8 @@ public:
   void disable();
   void release();
   void release(double x, double y);
+  /// Drop the dead portal session and create a fresh one, from the glib thread.
+  void restartSession();
   bool isActive() const
   {
     return m_isActive;
@@ -45,8 +47,10 @@ public:
 
 private:
   void glibThread(const void *);
+  void teardownSession();
   gboolean timeoutHandler() const;
   gboolean initSession();
+
   void setupSession(XdpInputCaptureSession *session);
   void handleStart(GObject *object, GAsyncResult *res);
   void handleInitSession(GObject *object, GAsyncResult *res);
@@ -151,11 +155,17 @@ private:
   IEventQueue *m_events = nullptr;
   int m_portalVersion = 0;
 
-  Thread *m_glibThread;
+  Thread *m_glibThread = nullptr;
   GMainLoop *m_glibMainLoop = nullptr;
+  // Private main context for the portal thread.  The default context is shared with the
+  // whole process, so an idle or async callback queued here outlived this object and then
+  // ran against freed memory from another instance's thread.  Own it, and it dies with us.
+  GMainContext *m_glibContext = nullptr;
 
   XdpPortal *m_portal = nullptr;
   XdpInputCaptureSession *m_session = nullptr;
+
+  guint m_reenableSourceId = 0;
 
   std::map<Signal, gulong> m_signals = {
       {Signal::SessionClosed, 0},     {Signal::Disabled, 0},     {Signal::Activated, 0},
