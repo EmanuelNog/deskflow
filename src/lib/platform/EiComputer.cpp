@@ -690,33 +690,38 @@ void EiComputer::addDevice(struct ei_device *device)
 
   m_eiDevices.emplace_back(ei_device_ref(device));
 
-  // A device that appears while we already hold an active capture session was not
-  // covered by the compositor's activation: activation starts emulating only the
-  // devices that existed at that moment, and nothing re-runs it for a late arrival.
-  // Without this the device stays silent until the user leaves and re-enters the
-  // client - which is exactly the "keyboard is dead, mouse still works" failure.
-  // (2026-10-29: the captured keyboard was recreated mid-session and no key reached
-  //  the server for 73 s; four test presses only arrived after a leave/enter cycle.)
-  // Only a resumed device may be told to emulate, and the flag must record that we did:
-  // starting it here without setting m_isEmulating made the next injected motion start the
-  // same device a second time, which EIS answers with "Invalid event from receiver ei
-  // context" and a disconnect.  Devices that arrive mid-session get their start from
-  // EI_EVENT_DEVICE_RESUMED -> ensureEmulating(), which keeps the flag honest.
-  if (m_isPrimary && m_portalInputCapture && m_portalInputCapture->isActive() &&
-      (m_eiKeyboard == device || m_eiPointer == device || m_eiAbs == device)) {
+  // A device that appears while a session is already running was not covered by the
+  // compositor's activation: activation starts emulating only the devices that existed at that
+  // moment, and nothing re-runs it for a late arrival - which is the "keyboard is dead, mouse
+  // still works" failure.  (2026-10-29: the captured keyboard was recreated mid-session and no
+  // key reached the server for 73 s; four test presses only arrived after a leave/enter cycle.)
+  // The call itself is only legal on a SENDER context - libei documents it as "only available on
+  // an ei sender context" - and only for a device EIS has resumed: see
+  // canStartEmulatingOnArrival().  The primary is a receiver, so there is nothing to start there;
+  // the compositor drives a captured device by itself the moment it resumes.  Starting it anyway
+  // is answered with "Invalid device state 3 for a start_emulating event" followed by a
+  // disconnect that rebuilds the whole capture, i.e. an input stall.  (Measured 2026-10-30 on the
+  // installed build: 89 arrival starts, 46 invalid starts, 39 disconnects with 39 re-allocations
+  // in one rotated log.)
+  // Every start must also record itself in m_isEmulating: one that leaves the flag false makes
+  // the next injected motion start the SAME device a second time, which EIS rejects the same way.
+  const bool tracked = device == m_eiPointer || device == m_eiKeyboard || device == m_eiAbs;
+  const bool resumed = (device == m_eiPointer && m_pointerResumed) || (device == m_eiKeyboard && m_keyboardResumed) ||
+                       (device == m_eiAbs && m_absResumed);
+  if (tracked && canStartEmulatingOnArrival(m_isPrimary, resumed)) {
     ++m_sequenceNumber;
     ei_device_start_emulating(device, m_sequenceNumber);
-    // Record it.  Without this the next injected motion saw m_isEmulating == false and
-    // started the same device again; EIS rejects a second start_emulating on a device it
-    // already has in EMULATING with "Invalid event from receiver ei context" and drops the
-    // whole client, which Deskflow then re-allocates - the input stutter.
     m_isEmulating = true;
-    LOG_INFO(
-        "device %s started emulating on arrival (capture session already active)", ei_device_get_name(device)
-    );
+    LOG_INFO("device %s started emulating on arrival (session already active)", ei_device_get_name(device));
   }
 
   updateShape();
+}
+
+bool EiComputer::canStartEmulatingOnArrival(bool isPrimary, bool resumed)
+{
+  // A receiver context may never start emulating and a paused device is not ours to start.
+  return !isPrimary && resumed;
 }
 
 void EiComputer::removeDevice(struct ei_device *device)

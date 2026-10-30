@@ -92,6 +92,19 @@ public:
   // Send clipboard event (needed by PortalInputCapture)
   void sendClipboardEvent(EventTypes type, ClipboardID id) const;
 
+  /*!
+   * Whether a device that shows up while a session is already running may be handed to
+   * ei_device_start_emulating() as soon as it arrives.
+   *
+   * libei documents that call as "only available on an ei sender context", so the primary -
+   * which is a receiver - must never make it: libeis answers a start from a receiver with
+   * "Invalid event from receiver ei context. Disconnecting client", and the device then flaps
+   * PAUSED <-> RESUMED with none of its events delivered.  On the sender (the secondary) a late
+   * device does need the call, but only once EIS has resumed it - starting a paused device is
+   * the same invalid event.
+   */
+  static bool canStartEmulatingOnArrival(bool isPrimary, bool resumed);
+
   // Local clipboard cache (used by PortalRemoteDesktop to land selection reads)
   EiClipboard *getClipboardCache() const
   {
