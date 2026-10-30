@@ -415,6 +415,13 @@ void WaylandClipboard::commitSelection()
     ext_data_control_source_v1_destroy(m_source);
     m_source = nullptr;
   }
+  if (text.empty() && html.empty()) {
+    // A data source with no mime types is a protocol error, and libwayland answers a
+    // protocol error with abort().  Clearing the selection is the way to say "empty".
+    ext_data_control_device_v1_set_selection(m_device, nullptr);
+    LOG_DEBUG("wayland clipboard: cleared the selection");
+    return;
+  }
   m_source = ext_data_control_manager_v1_create_data_source(m_manager);
   ext_data_control_source_v1_add_listener(m_source, &kSourceListener, this);
   if (!text.empty()) {
@@ -462,6 +469,7 @@ bool WaylandClipboard::empty()
   std::scoped_lock lock{m_mutex};
   m_pendingText.clear();
   m_pendingHtml.clear();
+  m_pendingAdded = true; // an empty clipboard is still an intent to publish (as a clear)
   return true;
 }
 
