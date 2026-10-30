@@ -87,6 +87,8 @@ private:
   std::string m_html;
   Time m_time = 0;
   bool m_ownSelection = false;
+  //! set when we publish: the compositor echoes our own source back as a selection event
+  bool m_ignoreNextSelection = false;
 
   //! data staged by empty()/add(), committed by close()
   mutable std::string m_pendingText;

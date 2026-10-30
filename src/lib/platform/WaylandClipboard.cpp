@@ -13,6 +13,7 @@
 #include <wayland-client.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
@@ -36,12 +37,34 @@ bool isTextMime(const char *mime)
          strcmp(mime, "STRING") == 0 || strcmp(mime, "TEXT") == 0;
 }
 
+//! Read until EOF, but never block forever.
+/*!
+Reading a selection we own would need this thread to serve our own send request,
+which it cannot do while blocked here, so a plain blocking read wedges the worker
+thread for good.  Give up after a short timeout instead: the data is then either
+ours (nothing to learn) or unavailable (the next selection event will tell us).
+*/
 std::string readAll(int fd)
 {
   std::string out;
   char buffer[8192];
-  ssize_t n = 0;
-  while ((n = read(fd, buffer, sizeof(buffer))) > 0) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  for (;;) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          deadline - std::chrono::steady_clock::now()
+    )
+                          .count();
+    if (left <= 0) {
+      break;
+    }
+    pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+    if (poll(&pfd, 1, static_cast<int>(left)) <= 0) {
+      break;
+    }
+    const ssize_t n = read(fd, buffer, sizeof(buffer));
+    if (n <= 0) {
+      break;
+    }
     out.append(buffer, static_cast<size_t>(n));
   }
   return out;
@@ -341,6 +364,18 @@ void WaylandClipboard::processPendingSelection()
   }
   m_pendingOffer = nullptr;
 
+  {
+    std::scoped_lock lock{m_mutex};
+    if (m_ignoreNextSelection) {
+      // The echo of the selection we just published.  Reading it would ask us for our
+      // own data, so drop it: we already know what it holds.
+      m_ignoreNextSelection = false;
+      ext_data_control_offer_v1_destroy(offer);
+      delete static_cast<OfferMimes *>(wl_proxy_get_user_data(reinterpret_cast<wl_proxy *>(offer)));
+      return;
+    }
+  }
+
   auto *mimes = static_cast<OfferMimes *>(wl_proxy_get_user_data(reinterpret_cast<wl_proxy *>(offer)));
   if (mimes == nullptr) {
     ext_data_control_offer_v1_destroy(offer);
@@ -431,6 +466,10 @@ void WaylandClipboard::commitSelection()
     ext_data_control_source_v1_offer(m_source, kHtmlMime);
   }
   ext_data_control_device_v1_set_selection(m_device, m_source);
+  {
+    std::scoped_lock lock{m_mutex};
+    m_ignoreNextSelection = true;
+  }
   LOG_DEBUG("wayland clipboard: published selection (%zu text bytes, %zu html bytes)", text.size(), html.size());
 }
 
@@ -458,6 +497,9 @@ void WaylandClipboard::onSourceCancelled(void *data, ext_data_control_source_v1 
   {
     std::scoped_lock lock{self->m_mutex};
     self->m_ownSelection = false;
+    // Someone else took the selection.  If the compositor never echoed our own source
+    // back, the skip flag is still armed; leaving it set would swallow the next real copy.
+    self->m_ignoreNextSelection = false;
   }
   LOG_DEBUG("wayland clipboard: selection ownership lost");
 }
