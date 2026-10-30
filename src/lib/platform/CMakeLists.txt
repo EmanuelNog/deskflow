@@ -29,6 +29,32 @@ if(UNIX AND NOT APPLE)
   check_symbol_exists(xdp_session_request_clipboard "libportal/portal-helpers.h;libportal/clipboard.h" HAVE_LP_CLIPBOARD)
   check_symbol_exists(xdp_global_shortcut_new "libportal/globalshortcuts.h" HAVE_LP_SHORTCUTS)
   cmake_pop_check_state()
+
+  # ext-data-control-v1 is the standardised successor of wlr-data-control.  It lets us
+  # reach the compositor clipboard directly, which is needed on compositors whose portal
+  # backend does not implement the Clipboard interface (Hyprland, for one).
+  pkg_check_modules(WAYLAND QUIET wayland-client)
+  if(WAYLAND_FOUND)
+    find_program(WAYLAND_SCANNER wayland-scanner)
+    if(WAYLAND_SCANNER)
+      set(WAYLAND_PROTOCOL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/protocols")
+      set(WAYLAND_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/protocols")
+      file(MAKE_DIRECTORY "${WAYLAND_GENERATED_DIR}")
+      set(EDC_XML "${WAYLAND_PROTOCOL_DIR}/ext-data-control-v1.xml")
+      set(EDC_HEADER "${WAYLAND_GENERATED_DIR}/ext-data-control-v1-client-protocol.h")
+      set(EDC_CODE "${WAYLAND_GENERATED_DIR}/ext-data-control-v1-protocol.c")
+      add_custom_command(
+        OUTPUT "${EDC_HEADER}"
+        COMMAND ${WAYLAND_SCANNER} client-header "${EDC_XML}" "${EDC_HEADER}"
+        DEPENDS "${EDC_XML}" VERBATIM)
+      add_custom_command(
+        OUTPUT "${EDC_CODE}"
+        COMMAND ${WAYLAND_SCANNER} private-code "${EDC_XML}" "${EDC_CODE}"
+        DEPENDS "${EDC_XML}" VERBATIM)
+      set(HAVE_EXT_DATA_CONTROL TRUE)
+      message(STATUS "ext-data-control-v1: enabled (direct Wayland clipboard)")
+    endif()
+  endif()
 endif()
 
 if(WIN32)
@@ -162,6 +188,14 @@ elseif(UNIX)
       EiKeyState.cpp
       EiKeyState.h
     )
+    if(HAVE_EXT_DATA_CONTROL)
+      list(APPEND PLATFORM_SOURCES
+        WaylandClipboard.cpp
+        WaylandClipboard.h
+        ${EDC_HEADER}
+        ${EDC_CODE}
+      )
+    endif()
     # The Portal sources also require EI.
     if(LIBPORTAL_FOUND)
       list(APPEND PLATFORM_SOURCES
@@ -188,6 +222,12 @@ endif()
 
 # wayland.h is included to check for wayland support
 add_library(platform STATIC ${PLATFORM_SOURCES})
+
+if(HAVE_EXT_DATA_CONTROL)
+  target_include_directories(platform PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" ${WAYLAND_INCLUDE_DIRS})
+  target_link_libraries(platform PRIVATE ${WAYLAND_LIBRARIES})
+  target_compile_definitions(platform PRIVATE HAVE_EXT_DATA_CONTROL=1)
+endif()
 
 target_link_libraries(platform PUBLIC client ${libs})
 

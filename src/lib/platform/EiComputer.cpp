@@ -19,6 +19,9 @@
 #include "platform/EiEventQueueBuffer.h"
 #include "platform/EiKeyState.h"
 #include "platform/PortalInputCapture.h"
+#ifdef HAVE_EXT_DATA_CONTROL
+#include "platform/WaylandClipboard.h"
+#endif
 #include "platform/PortalRemoteDesktop.h"
 
 #include <algorithm>
@@ -64,6 +67,19 @@ EiComputer::EiComputer(bool isPrimary, IEventQueue *events, bool usePortal)
     if (isPrimary) {
       // Portal input capture manages its own clipboard
       m_portalInputCapture = new PortalInputCapture(this, m_events);
+#ifdef HAVE_EXT_DATA_CONTROL
+      // The portal Clipboard interface is optional and several compositors (Hyprland among
+      // them) do not implement its backend.  Where the compositor speaks ext-data-control we
+      // read and write the selection ourselves instead of relying on the portal.
+      if (WaylandClipboard::isAvailable()) {
+        m_selectionClipboard = new WaylandClipboard(kClipboardClipboard, [this] {
+          // The server has no polling loop for the primary clipboard on Wayland: the
+          // platform pushes changes, exactly as the portal backend does.
+          sendClipboardEvent(EventTypes::ClipboardGrabbed, kClipboardClipboard);
+        });
+        LOG_DEBUG("clipboard: using ext-data-control for the local selection");
+      }
+#endif
 #ifdef HAVE_LIBPORTAL_SHORTCUTS
       m_portalGlobalShortcuts = new PortalGlobalShortcuts(this, m_events);
 #endif
@@ -102,6 +118,7 @@ EiComputer::~EiComputer()
 
   delete m_keyState;
   delete m_clipboard;
+  delete m_selectionClipboard;
 
 #ifdef HAVE_LIBPORTAL_SHORTCUTS
   delete m_portalGlobalShortcuts;
@@ -180,6 +197,13 @@ void *EiComputer::getEventTarget() const
 
 bool EiComputer::getClipboard(ClipboardID id, IClipboard *clipboard) const
 {
+  // Prefer direct Wayland selection access when the compositor supports it.
+  // Return the live object: callers poll getTime() to notice changes, so a snapshot copy
+  // would freeze the clipboard at whatever it held when this was called.
+  if (m_selectionClipboard != nullptr) {
+    return m_selectionClipboard;
+  }
+
   // If using portal input capture, get clipboard from there
   if (m_portalInputCapture) {
     const auto sourceClipboard = m_portalInputCapture->getClipboard(id);
@@ -486,6 +510,11 @@ bool EiComputer::setClipboard(ClipboardID id, const IClipboard *clipboard)
 {
   if (!clipboard) {
     return false;
+  }
+
+  // Prefer direct Wayland selection access when the compositor supports it
+  if (m_selectionClipboard != nullptr) {
+    return IClipboard::copy(m_selectionClipboard, clipboard);
   }
 
   // If using portal input capture, set clipboard there

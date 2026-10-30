@@ -158,6 +158,10 @@ private:
 
   // clipboard stuff
   EiClipboard *m_clipboard = nullptr;
+
+  //! Direct Wayland selection access (ext-data-control), used when the compositor does not
+  //! implement the portal Clipboard backend.  Only set on the primary computer.
+  IClipboard *m_selectionClipboard = nullptr;
   size_t m_maximumClipboardSize = INT_MAX;
 
   std::vector<ei_device *> m_eiDevices;
