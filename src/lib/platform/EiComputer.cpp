@@ -705,14 +705,19 @@ void EiComputer::addDevice(struct ei_device *device)
   // in one rotated log.)
   // Every start must also record itself in m_isEmulating: one that leaves the flag false makes
   // the next injected motion start the SAME device a second time, which EIS rejects the same way.
+  // Only when we are actually injecting into this computer - a device resumed for a screen the
+  // pointer is not on must not be put into emulating, or it holds that state with no events.
   const bool tracked = device == m_eiPointer || device == m_eiKeyboard || device == m_eiAbs;
   const bool resumed = (device == m_eiPointer && m_pointerResumed) || (device == m_eiKeyboard && m_keyboardResumed) ||
                        (device == m_eiAbs && m_absResumed);
-  if (tracked && canStartEmulatingOnArrival(m_isPrimary, resumed)) {
+  if (tracked && m_isOnComputer && canStartEmulatingOnArrival(m_isPrimary, resumed)) {
     ++m_sequenceNumber;
     ei_device_start_emulating(device, m_sequenceNumber);
     m_isEmulating = true;
     LOG_INFO("device %s started emulating on arrival (session already active)", ei_device_get_name(device));
+    // ensureEmulating() owns the idle-emulation timer.  It short-circuits on m_isEmulating, so this
+    // only arms that timer - it cannot start the device a second time.
+    ensureEmulating();
   }
 
   updateShape();
