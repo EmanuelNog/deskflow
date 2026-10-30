@@ -178,6 +178,13 @@ private:
   // flowing, and release after a short idle so the compositor can DPMS-sleep
   // this computer even while the deskflow cursor logically sits on it.
   mutable bool m_isEmulating = false;
+  //! Devices may only be told to emulate while EIS has them resumed.  Calling
+  //! start_emulating on a paused or removed device makes EIS answer with
+  //! "Invalid event from receiver ei context" and drop the client, which the portal
+  //! then reports as a closed session - and libportal crashes on that teardown.
+  mutable bool m_pointerResumed = false;
+  mutable bool m_keyboardResumed = false;
+  mutable bool m_absResumed = false;
   mutable EventQueueTimer *m_idleEmulationTimer = nullptr;
   // Chosen empirically on one machine in 2026-06; not derived from any protocol constant.
   static constexpr double s_idleEmulationTimeout = 4.0;

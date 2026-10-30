@@ -446,12 +446,24 @@ void EiComputer::ensureEmulating() const
 
   if (!m_isEmulating) {
     ++m_sequenceNumber;
-    if (m_eiPointer)
+    bool started = false;
+    if (m_eiPointer && m_pointerResumed) {
       ei_device_start_emulating(m_eiPointer, m_sequenceNumber);
-    if (m_eiKeyboard)
+      started = true;
+    }
+    if (m_eiKeyboard && m_keyboardResumed) {
       ei_device_start_emulating(m_eiKeyboard, m_sequenceNumber);
-    if (m_eiAbs)
+      started = true;
+    }
+    if (m_eiAbs && m_absResumed) {
       ei_device_start_emulating(m_eiAbs, m_sequenceNumber);
+      started = true;
+    }
+    if (!started) {
+      // Nothing is resumed: EIS has not handed us a usable device, so there is nothing
+      // to emulate yet.  Leave m_isEmulating false and try again on the next input.
+      return;
+    }
     m_isEmulating = true;
   }
 
@@ -468,11 +480,11 @@ void EiComputer::stopEmulating() const
   cancelIdleEmulationTimer();
   if (!m_isEmulating)
     return;
-  if (m_eiPointer)
+  if (m_eiPointer && m_pointerResumed)
     ei_device_stop_emulating(m_eiPointer);
-  if (m_eiKeyboard)
+  if (m_eiKeyboard && m_keyboardResumed)
     ei_device_stop_emulating(m_eiKeyboard);
-  if (m_eiAbs)
+  if (m_eiAbs && m_absResumed)
     ei_device_stop_emulating(m_eiAbs);
   m_isEmulating = false;
 }
@@ -703,14 +715,17 @@ void EiComputer::removeDevice(struct ei_device *device)
 
   bool wasTracked = false;
   if (device == m_eiPointer) {
+    m_pointerResumed = false;
     m_eiPointer = ei_device_unref(m_eiPointer);
     wasTracked = true;
   }
   if (device == m_eiKeyboard) {
+    m_keyboardResumed = false;
     m_eiKeyboard = ei_device_unref(m_eiKeyboard);
     wasTracked = true;
   }
   if (device == m_eiAbs) {
+    m_absResumed = false;
     m_eiAbs = ei_device_unref(m_eiAbs);
     wasTracked = true;
   }
@@ -1061,6 +1076,12 @@ void EiComputer::handleSystemEvent(const Event &)
       break;
     case EI_EVENT_DEVICE_PAUSED:
       LOG_DEBUG("device %s is paused", ei_device_get_name(device));
+      if (device == m_eiPointer)
+        m_pointerResumed = false;
+      if (device == m_eiKeyboard)
+        m_keyboardResumed = false;
+      if (device == m_eiAbs)
+        m_absResumed = false;
       m_isEmulating = false;
       // a paused device is reset to neutral by the EIS side and sends no
       // further events, so the releases for held buttons never arrive
@@ -1069,6 +1090,12 @@ void EiComputer::handleSystemEvent(const Event &)
       break;
     case EI_EVENT_DEVICE_RESUMED:
       LOG_DEBUG("device %s is resumed", ei_device_get_name(device));
+      if (device == m_eiPointer)
+        m_pointerResumed = true;
+      if (device == m_eiKeyboard)
+        m_keyboardResumed = true;
+      if (device == m_eiAbs)
+        m_absResumed = true;
       if (!m_isPrimary && m_isOnComputer) {
         ensureEmulating();
       }
