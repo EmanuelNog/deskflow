@@ -437,6 +437,12 @@ void WaylandClipboard::commitSelection()
     m_pendingCommit = false;
     text = m_pendingText;
     html = m_pendingHtml;
+    if (text == m_text && html == m_html) {
+      // The server writes back the clipboard it has just read from us.  Publishing it
+      // again would advance getTime(), the server would see a change and grab it again,
+      // and the two would chase each other: a grab/publish loop that stalls input.
+      return;
+    }
     m_text = text;
     m_html = html;
     m_ownSelection = true;
