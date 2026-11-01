@@ -399,8 +399,11 @@ void MSWindowsDesks::hideSystemCursor() const
     LOG_WARN("failed to create the blank cursor, the pointer will stay visible");
     return;
   }
+  // 32512 is IDC_ARROW / OCR_NORMAL; the OCR_* constant is not declared with this SDK's
+  // WINVER, and the value is stable.
+  constexpr DWORD kArrowCursorId = 32512;
   // SetSystemCursor takes ownership of the handle on success.
-  if (!SetSystemCursor(blank, OCR_NORMAL)) {
+  if (!SetSystemCursor(blank, kArrowCursorId)) {
     LOG_WARN("SetSystemCursor failed: %d", GetLastError());
     destroyCursor(blank);
     return;
