@@ -129,6 +129,10 @@ MSWindowsDesks::MSWindowsDesks(
 {
 
   m_cursor = createBlankCursor();
+  if (!m_isPrimary) {
+    // A previous run may have died while the pointer was blanked; never start life without one.
+    restoreSystemCursor();
+  }
   m_deskClass = createDeskWindowClass(m_isPrimary);
   m_keyLayout = AppUtilWindows::instance().getCurrentKeyboardLayout();
   resetOptions();
@@ -137,6 +141,9 @@ MSWindowsDesks::MSWindowsDesks(
 MSWindowsDesks::~MSWindowsDesks()
 {
   disable();
+  if (!m_isPrimary) {
+    restoreSystemCursor();
+  }
   destroyClass(m_deskClass);
   destroyCursor(m_cursor);
   delete m_updateKeys;
@@ -385,6 +392,31 @@ void MSWindowsDesks::destroyCursor(HCURSOR cursor) const
   }
 }
 
+void MSWindowsDesks::hideSystemCursor() const
+{
+  HCURSOR blank = createBlankCursor();
+  if (blank == nullptr) {
+    LOG_WARN("failed to create the blank cursor, the pointer will stay visible");
+    return;
+  }
+  // SetSystemCursor takes ownership of the handle on success.
+  if (!SetSystemCursor(blank, OCR_NORMAL)) {
+    LOG_WARN("SetSystemCursor failed: %d", GetLastError());
+    destroyCursor(blank);
+    return;
+  }
+  LOG_VERBOSE("system cursor blanked");
+}
+
+void MSWindowsDesks::restoreSystemCursor() const
+{
+  if (!SystemParametersInfo(SPI_SETCURSORS, 0, nullptr, 0)) {
+    LOG_WARN("SPI_SETCURSORS failed: %d", GetLastError());
+    return;
+  }
+  LOG_VERBOSE("system cursors restored");
+}
+
 ATOM MSWindowsDesks::createDeskWindowClass(bool isPrimary) const
 {
   WNDCLASSEX classInfo;
@@ -546,6 +578,10 @@ void MSWindowsDesks::deskEnter(Desk *desk)
     }
   }
 
+  if (!m_isPrimary) {
+    // whatever happened while we were away, never leave the user without a pointer
+    restoreSystemCursor();
+  }
   setCursorVisibility(true);
 
   SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
@@ -572,6 +608,11 @@ void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
   }
 
   setCursorVisibility(false);
+  if (!m_isPrimary) {
+    // The parked pointer sits over whatever application window is at the centre of the screen,
+    // and that window draws its own cursor; the per-thread hide above cannot reach it.
+    hideSystemCursor();
+  }
 
   if (m_isPrimary) {
     // map a window to hide the cursor and to use whatever keyboard

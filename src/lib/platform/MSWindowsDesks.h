@@ -196,6 +196,16 @@ private:
   // initialization and shutdown operations
   HCURSOR createBlankCursor() const;
   void destroyCursor(HCURSOR cursor) const;
+
+  //! Replace the system arrow with a blank cursor, and put the user's cursors back.
+  /*!
+  ShowCursor() and SetCursor() are per-thread: they only affect the cursor over the calling
+  thread's own windows, and a 1x1 WS_EX_TRANSPARENT hider window does not own the cursor that
+  the window underneath it draws.  SetSystemCursor() is global, so it hides the pointer
+  whatever is under it.  It takes ownership of the handle; restore with SPI_SETCURSORS.
+  */
+  void hideSystemCursor() const;
+  void restoreSystemCursor() const;
   ATOM createDeskWindowClass(bool isPrimary) const;
   void destroyClass(ATOM windowClass) const;
   HWND createWindow(ATOM windowClass, const wchar_t *name) const;
