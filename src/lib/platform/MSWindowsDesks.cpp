@@ -638,6 +638,12 @@ void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
     // we aren't notified when the mouse leaves our window.
     SetCapture(desk->m_window);
 
+    // Apply the blank cursor now.  Capture alone only makes the hider window the recipient of the
+    // next WM_SETCURSOR, and while the pointer is parked on the other computer no mouse ever moves
+    // here: the cursor keeps whatever the window underneath had drawn, so it stays visible over an
+    // application (measured on Windows 11: class cursor present, capture held, cursor still shown).
+    SetCursor(m_cursor);
+
     // windows can take a while to hide the cursor, so wait a few milliseconds to ensure the cursor
     // is hidden before centering. this doesn't seem to affect the fluidity of the transition.
     // without this, the cursor appears to flicker in the center of the computer which is annoying.
