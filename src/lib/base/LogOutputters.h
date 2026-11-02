@@ -10,7 +10,9 @@
 
 #include "base/ILogOutputter.h"
 
+#include <QFile>
 #include <QString>
+
 //! Stop traversing log chain outputter
 /*!
 This outputter performs no output and returns false from \c write(),
@@ -67,7 +69,11 @@ public:
   void setLogFilename(const QString &title);
 
 private:
+  void rotate();
+
   QString m_fileName;
+  QFile m_file;
+  qint64 m_size = 0;
 };
 
 //! Write log to system log

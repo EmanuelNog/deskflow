@@ -648,6 +648,22 @@ void EiComputer::addDevice(struct ei_device *device)
 
   m_eiDevices.emplace_back(ei_device_ref(device));
 
+  // A device that appears while we already hold an active capture session was not
+  // covered by the compositor's activation: activation starts emulating only the
+  // devices that existed at that moment, and nothing re-runs it for a late arrival.
+  // Without this the device stays silent until the user leaves and re-enters the
+  // client - which is exactly the "keyboard is dead, mouse still works" failure.
+  // (2026-10-29: the captured keyboard was recreated mid-session and no key reached
+  //  the server for 73 s; four test presses only arrived after a leave/enter cycle.)
+  if (m_isPrimary && m_portalInputCapture && m_portalInputCapture->isActive() &&
+      (m_eiKeyboard == device || m_eiPointer == device || m_eiAbs == device)) {
+    ++m_sequenceNumber;
+    ei_device_start_emulating(device, m_sequenceNumber);
+    LOG_INFO(
+        "device %s started emulating on arrival (capture session already active)", ei_device_get_name(device)
+    );
+  }
+
   updateShape();
 }
 
