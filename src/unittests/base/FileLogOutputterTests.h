@@ -19,8 +19,8 @@ class FileLogOutputterTests : public QObject
 private Q_SLOTS:
   void init();
   void write_multipleMessages_appendsEachLine();
-  void write_sizeLimitExceeded_preservesPreviousLog();
-  void write_rotatedLogExists_replacesIt();
+  void write_sizeLimitExceeded_dropsOldContent();
+  void write_rotationKeepsSingleFile();
 
 private:
   QString rotatedFileName() const;

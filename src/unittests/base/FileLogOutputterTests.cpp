@@ -52,28 +52,31 @@ void FileLogOutputterTests::write_multipleMessages_appendsEachLine()
   QCOMPARE(readAll(m_fileName), QStringLiteral("first\nsecond\n"));
 }
 
-void FileLogOutputterTests::write_sizeLimitExceeded_preservesPreviousLog()
+void FileLogOutputterTests::write_sizeLimitExceeded_dropsOldContent()
 {
   FileLogOutputter outputter(m_fileName);
 
   growLogPastSizeLimit(outputter, QStringLiteral("oldest entry"));
 
-  QVERIFY2(QFileInfo::exists(rotatedFileName()), "log was discarded instead of rotated");
-  QVERIFY(readAll(rotatedFileName()).startsWith(QStringLiteral("oldest entry\n")));
+  QVERIFY2(!QFileInfo::exists(rotatedFileName()), "a .1 copy must not be kept: one capped file per log path");
+  QVERIFY2(!QFileInfo::exists(m_fileName), "the live file is dropped on rotation and recreated by the next line");
 
   QVERIFY(outputter.write(LogLevel::Level::Info, QStringLiteral("after rotating")));
   QCOMPARE(readAll(m_fileName), QStringLiteral("after rotating\n"));
 }
 
-void FileLogOutputterTests::write_rotatedLogExists_replacesIt()
+void FileLogOutputterTests::write_rotationKeepsSingleFile()
 {
   FileLogOutputter outputter(m_fileName);
 
   growLogPastSizeLimit(outputter, QStringLiteral("first batch"));
-  QVERIFY(readAll(rotatedFileName()).startsWith(QStringLiteral("first batch\n")));
+  QVERIFY(outputter.write(LogLevel::Level::Info, QStringLiteral("one")));
+  QVERIFY2(!QFileInfo::exists(rotatedFileName()), "no rotated copy after the first rotation");
 
   growLogPastSizeLimit(outputter, QStringLiteral("second batch"));
-  QVERIFY(readAll(rotatedFileName()).startsWith(QStringLiteral("second batch\n")));
+  QVERIFY(outputter.write(LogLevel::Level::Info, QStringLiteral("two")));
+  QVERIFY2(!QFileInfo::exists(rotatedFileName()), "no rotated copy after the second rotation");
+  QVERIFY(readAll(m_fileName).startsWith(QStringLiteral("two\n")));
 }
 
 QTEST_MAIN(FileLogOutputterTests)

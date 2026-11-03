@@ -15,7 +15,7 @@
 #include <QString>
 #include <QTextStream>
 
-constexpr auto s_logFileSizeLimit = 32 * 1024 * 1024; //!< Max Log size before rotating (32MiB: 1MiB kept only ~1 minute of VERBOSE)
+constexpr auto s_logFileSizeLimit = 50 * 1024 * 1024; //!< Hard cap per log file (50MiB); rotation drops the old content
 
 //
 // StopLogOutputter
@@ -177,13 +177,13 @@ void FileLogOutputter::rotate()
   if (m_file.isOpen())
     m_file.close();
 
-  const auto oldFile = QStringLiteral("%1.1").arg(m_fileName);
-  QFile::remove(oldFile);
-  QFile::rename(m_fileName, oldFile);
+  // Drop the old content instead of keeping a ".1" copy.  A log path must never accumulate two
+  // capped files: this machine ended up with 38 MiB + 16 MiB of daemon log and 32 MiB + 30 MiB
+  // of client log that someone had to clean by hand.  One file, hard cap, no growth beyond it.
+  QFile::remove(QStringLiteral("%1.1").arg(m_fileName)); // clear a copy left by an older build
+  QFile::remove(m_fileName);
 
-  // leave the file closed: the log is gone from m_fileName until the next line arrives, which
-  // recreates it.  That keeps the rotation contract (the live file disappears when it rotates)
-  // and avoids an extra create per rotation.
+  // leave the file closed: it is recreated by the next line.
   m_size = 0;
 }
 
