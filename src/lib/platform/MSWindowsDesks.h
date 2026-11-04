@@ -206,6 +206,8 @@ private:
   */
   void hideSystemCursor() const;
   void restoreSystemCursor() const;
+  //! Low-level mouse hook armed while the system cursor is blanked.
+  static LRESULT CALLBACK cursorWatchdogProc(int code, WPARAM wParam, LPARAM lParam);
   ATOM createDeskWindowClass(bool isPrimary) const;
   void destroyClass(ATOM windowClass) const;
   HWND createWindow(ATOM windowClass, const wchar_t *name) const;

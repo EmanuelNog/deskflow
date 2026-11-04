@@ -392,6 +392,29 @@ void MSWindowsDesks::destroyCursor(HCURSOR cursor) const
   }
 }
 
+namespace {
+// While the pointer is on the server the client blanks the *system* cursor, which is global and
+// therefore survives the user grabbing the mouse that is physically attached to this machine.  The
+// original behaviour is that local input brings the pointer back, so arm a low-level mouse hook for
+// the duration of the blank and restore on the first real event.  Injected events are what this
+// process itself synthesises, so they must not count as local input.
+HHOOK g_cursorWatchdog = nullptr;
+const MSWindowsDesks *g_cursorWatchdogOwner = nullptr;
+
+} // namespace
+
+LRESULT CALLBACK MSWindowsDesks::cursorWatchdogProc(int code, WPARAM wParam, LPARAM lParam)
+{
+  if (code >= 0 && g_cursorWatchdogOwner != nullptr) {
+    const auto *info = reinterpret_cast<MSLLHOOKSTRUCT *>(lParam);
+    if ((info->flags & LLMHF_INJECTED) == 0) {
+      const MSWindowsDesks *owner = g_cursorWatchdogOwner;
+      owner->restoreSystemCursor(); // unhooks the watchdog and puts the cursors back
+    }
+  }
+  return CallNextHookEx(g_cursorWatchdog, code, wParam, lParam);
+}
+
 void MSWindowsDesks::hideSystemCursor() const
 {
   HCURSOR blank = createBlankCursor();
@@ -409,10 +432,24 @@ void MSWindowsDesks::hideSystemCursor() const
     return;
   }
   LOG_VERBOSE("system cursor blanked");
+
+  if (g_cursorWatchdog == nullptr) {
+    g_cursorWatchdogOwner = this;
+    g_cursorWatchdog = SetWindowsHookEx(WH_MOUSE_LL, &MSWindowsDesks::cursorWatchdogProc, GetModuleHandle(nullptr), 0);
+    if (g_cursorWatchdog == nullptr) {
+      LOG_WARN("failed to arm the local-input cursor watchdog: %d", GetLastError());
+      g_cursorWatchdogOwner = nullptr;
+    }
+  }
 }
 
 void MSWindowsDesks::restoreSystemCursor() const
 {
+  if (g_cursorWatchdog != nullptr) {
+    UnhookWindowsHookEx(g_cursorWatchdog);
+    g_cursorWatchdog = nullptr;
+    g_cursorWatchdogOwner = nullptr;
+  }
   if (!SystemParametersInfo(SPI_SETCURSORS, 0, nullptr, 0)) {
     LOG_WARN("SPI_SETCURSORS failed: %d", GetLastError());
     return;
