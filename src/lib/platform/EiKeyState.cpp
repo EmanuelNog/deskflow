@@ -14,10 +14,29 @@
 #include "platform/XDGKeyUtil.h"
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <unistd.h>
 
 namespace deskflow {
+
+namespace {
+/// Reads the whole keymap buffer from fd, starting at offset 0.
+std::optional<std::string> readKeymapText(int fd, std::size_t len)
+{
+  std::string buffer(len, '\0');
+  lseek(fd, 0, SEEK_SET);
+
+  const auto got = read(fd, buffer.data(), len);
+  if (got < 0 || static_cast<std::size_t>(got) < len) {
+    return std::nullopt;
+  }
+  return buffer;
+}
+} // namespace
 
 EiKeyState::EiKeyState(EiComputer *computer, IEventQueue *events)
     : KeyState(
@@ -45,30 +64,40 @@ void EiKeyState::initDefaultKeymap()
     xkb_state_unref(m_xkbState);
   }
   m_xkbState = xkb_state_new(m_xkbKeymap);
+
+  // The default keymap is not the server's keymap, so a later delivery of any keymap text
+  // is a change even when we saw that text before.
+  m_keymapText.clear();
 }
 
-void EiKeyState::init(int fd, size_t len)
+bool EiKeyState::sameKeymapText(const std::string &previous, const std::string &incoming)
 {
-  auto buffer = std::make_unique<char[]>(len + 1);
-  lseek(fd, 0, SEEK_SET);
+  const auto trim = [](const std::string &text) {
+    const auto last = text.find_last_not_of('\0');
+    return last == std::string::npos ? std::string_view{} : std::string_view(text).substr(0, last + 1);
+  };
 
-  if (auto sz = read(fd, buffer.get(), len); (size_t)sz < len) {
-    LOG_WARN("failed to create xkb context: %s", strerror(errno));
-    return;
-  }
+  return trim(previous) == trim(incoming);
+}
 
+bool EiKeyState::applyKeymapText(const std::string &text)
+{
   // See xkbcommon/libxkbcommon issue #307, xkb_keymap_new_from_buffer fails if
   // we have a terminating null byte. Since we can't control whether the other
   // end sends that byte, enforce null-termination in our buffer and pass the
   // whole thing as string.
+  std::string terminated = text;
+  while (!terminated.empty() && terminated.back() == '\0') {
+    terminated.pop_back();
+  }
+  terminated.push_back('\0'); // guarantee null-termination
 
-  buffer[len] = '\0'; // guarantee null-termination
-  auto keymap = xkb_keymap_new_from_string(m_xkb, buffer.get(), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+  auto keymap = xkb_keymap_new_from_string(m_xkb, terminated.c_str(), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
   if (!keymap) {
     LOG_WARN("failed to compile keymap, falling back to defaults");
     // Falling back to layout "us" is a lot more useful than segfaulting
     initDefaultKeymap();
-    return;
+    return false;
   }
 
   if (m_xkbKeymap) {
@@ -80,6 +109,42 @@ void EiKeyState::init(int fd, size_t len)
     xkb_state_unref(m_xkbState);
   }
   m_xkbState = xkb_state_new(m_xkbKeymap);
+
+  return true;
+}
+
+void EiKeyState::init(int fd, std::size_t len)
+{
+  auto text = readKeymapText(fd, len);
+  if (!text) {
+    LOG_WARN("failed to read keymap: %s", strerror(errno));
+    return;
+  }
+
+  m_keymapText = applyKeymapText(*text) ? *text : std::string{};
+}
+
+bool EiKeyState::initIfChanged(int fd, std::size_t len)
+{
+  auto text = readKeymapText(fd, len);
+  if (!text) {
+    LOG_WARN("failed to read keymap, keeping the current one: %s", strerror(errno));
+    return false;
+  }
+
+  // The EIS server destroys and re-creates its keyboard and re-sends the SAME keymap, several
+  // times a minute (measured 2026-11-12: 1089 rebuilds in 27h, each re-ingesting a byte-identical
+  // 320-entry keymap).  Recompiling it replaces the xkb state, which drops every modifier the
+  // user is holding, and the re-ingest is the log flood behind a 38 MB verbose log.  Nothing
+  // about an unchanged keymap needs redoing, so keep the state we have (chk-n5va.116).
+  if (!m_keymapText.empty() && sameKeymapText(m_keymapText, *text)) {
+    LOG_DEBUG("keymap unchanged (%zu bytes), keeping the current key state", text->size());
+    return false;
+  }
+
+  m_keymapText = applyKeymapText(*text) ? *text : std::string{};
+  // A failed compile leaves the default keymap in place, which is still a change for the caller.
+  return true;
 }
 
 EiKeyState::~EiKeyState()

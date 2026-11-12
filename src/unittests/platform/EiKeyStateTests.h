@@ -19,6 +19,10 @@ private Q_SLOTS:
   void initTestCase();
   void clearStaleModifiers_shiftDownAndNumLockOn_shiftClearedAndNumLockPreserved();
   void updateLockedModifiers_compositorLockState_numLockFollowsCompositor();
+  void initIfChanged_sameKeymapAgain_modifierStateSurvivesAndNoChangeReported();
+  void initIfChanged_differentKeymap_ingestsAndResetsModifierState();
+  void initIfChanged_trailingNullOnly_notTreatedAsAChangedKeymap();
+  void initIfChanged_afterDefaultKeymapFallback_ingestsTheSameKeymapAgain();
 
 private:
   Arch m_arch;

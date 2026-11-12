@@ -681,7 +681,14 @@ void EiComputer::addDevice(struct ei_device *device)
         keymap && ei_keymap_get_type(keymap) == EI_KEYMAP_TYPE_XKB) {
       int fd = ei_keymap_get_fd(keymap);
       size_t len = ei_keymap_get_size(keymap);
-      m_keyState->init(fd, len);
+      // initIfChanged() rather than init(): the compositor destroys and re-creates this keyboard
+      // on its own cadence and re-sends an UNCHANGED keymap (measured 2026-11-12: 1089 rebuilds
+      // in 27h, 1031 of them carrying a byte-identical 320-entry keymap).  Re-ingesting it threw
+      // away the xkb state - and with it every modifier the user was holding - for nothing, so
+      // the KeyMap is only rebuilt when the key state actually changed.
+      if (m_keyState->initIfChanged(fd, len)) {
+        m_keyState->updateKeyMap();
+      }
     } else {
       // We rely on the EIS implementation to give us a keymap, otherwise we
       // really have no idea what a keycode means (other than it's linux/input.h
@@ -690,8 +697,8 @@ void EiComputer::addDevice(struct ei_device *device)
       // influence with env vars what we get
       LOG_WARN("keyboard device %s does not have a keymap, we are guessing", ei_device_get_name(device));
       m_keyState->initDefaultKeymap();
+      m_keyState->updateKeyMap();
     }
-    m_keyState->updateKeyMap();
   }
 
   if (!m_eiAbs && ei_device_has_capability(device, EI_DEVICE_CAP_POINTER_ABSOLUTE) &&
